@@ -74,7 +74,9 @@ public class ImageDef {
      * Parse an image definition from a YAML file on disk.
      */
     public static ImageDef parseFile(Path file) throws IOException {
-        return YAML.readValue(file.toFile(), ImageDef.class);
+        var def = YAML.readValue(file.toFile(), ImageDef.class);
+        def.setSource(file.toAbsolutePath().normalize().toString());
+        return def;
     }
 
     public static ImageDef parseYaml(String yaml) throws IOException {
@@ -176,7 +178,10 @@ public class ImageDef {
     public List<ToolDef.ToolRef> getTools() { return tools; }
     public void setTools(List<ToolDef.ToolRef> tools) { this.tools = tools; }
     public List<RepoEntry> getRepos() { return repos; }
-    public void setRepos(List<RepoEntry> repos) { this.repos = repos; }
+    public void setRepos(List<RepoEntry> repos) {
+        this.repos = repos;
+        setSource(source);
+    }
     public SkillsDef getSkills() { return skills; }
     public void setSkills(SkillsDef skills) { this.skills = skills; }
     public List<PackageRepo> getPackageRepos() { return packageRepos; }
@@ -210,7 +215,11 @@ public class ImageDef {
         this.accounts = accounts == null ? Map.of() : Map.copyOf(accounts);
     }
     public String getSource() { return source; }
-    public void setSource(String source) { this.source = source; }
+    public void setSource(String source) {
+        this.source = source;
+        var directory = source != null && Path.of(source).isAbsolute() ? Path.of(source).getParent() : null;
+        for (var repo : repos) repo.templateDirectory = directory;
+    }
     /** Whether this definition ships with isx itself, as opposed to one the user wrote. */
     public boolean isBuiltIn() { return "built-in".equals(source); }
 
@@ -291,6 +300,11 @@ public class ImageDef {
         private String path;
         private String branch;
         private String prime;
+        @JsonIgnore
+        private Path templateDirectory;
+
+        @JsonIgnore
+        public Path getTemplateDirectory() { return templateDirectory; }
 
         public String getUrl() { return url; }
         public void setUrl(String url) { this.url = url; }
@@ -429,7 +443,7 @@ public class ImageDef {
                     if (dev.incusspawn.git.HostRepoSource.isHostOnly(r.getUrl())) {
                         sb.append("host-repo=").append(hostRepoFingerprints.containsKey(r.getUrl())
                                 ? hostRepoFingerprints.get(r.getUrl())
-                                : dev.incusspawn.git.HostRepoSource.fingerprint(r.getUrl())).append('\n');
+                                : dev.incusspawn.git.HostRepoSource.fingerprint(r.getUrl(), r.getTemplateDirectory())).append('\n');
                     }
                 });
         if (skills.getRepo() != null) sb.append("skills-repo=").append(skills.getRepo()).append('\n');

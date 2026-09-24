@@ -1,9 +1,12 @@
 package dev.incusspawn.git;
 
 import dev.incusspawn.config.ImageDef;
+import dev.incusspawn.config.BuildSource;
 import dev.incusspawn.config.SpawnConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,7 +40,7 @@ class HostRepoSourceTest {
 
     private Path cloneRepo(Path source, String name) throws Exception {
         var destination = tempDir.resolve(name);
-        var snapshot = HostRepoSource.capture(url(source));
+        var snapshot = HostRepoSource.capture(source.toString());
         shell(snapshot.cloneScript(source.resolve(".git").toString(), destination.toString()));
         return destination;
     }
@@ -121,8 +124,126 @@ class HostRepoSourceTest {
         assertEquals(source, HostRepoSource.path(url));
         assertEquals("Some Project #1", GitRemoteUtils.repoNameFromUrl(url));
         assertFalse(GitRemoteUtils.urlsMatch("file:///host/Repo/.git", "file:///host/repo/.git"));
-        for (var invalid : List.of("file:relative/.git", "file://remote/repo/.git", "file:///repo/.git?x", "file:///repo/.git#x")) {
+        for (var invalid : List.of("file://remote/repo/.git", "file:///repo/.git?x", "file:///repo/.git#x")) {
             assertThrows(IllegalArgumentException.class, () -> HostRepoSource.path(invalid));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "file://{absolute}", "file:{absolute}", "{absolute}",
+            "file://~/templates/repo", "file:~/templates/repo", "~/templates/repo",
+            "file://repo", "file:repo", "file://./repo", "file:./repo", "repo", "./repo",
+            "file:dir/repo", "file://./dir/repo", "file:./dir/repo", "dir/repo", "./dir/repo"
+    })
+    void clonesLocalFormsFromTheirDefiningTemplate(String form) throws Exception {
+        var originalHome = System.getProperty("user.home");
+        System.setProperty("user.home", tempDir.toString());
+        try {
+            var relative = form.contains("dir/repo") ? "dir/repo" : "repo";
+            var source = repository("templates/" + relative);
+            var template = tempDir.resolve("templates/image.yaml");
+            var url = form.replace("{absolute}", source.toString());
+            // A bare file://name is the single-component shorthand, not a host/path URL.
+            for (var suffix : form.equals("file://repo") ? List.of("") : List.of("", "/.git")) {
+                Files.writeString(template, "name: tpl-local\nrepos:\n  - url: '" + url + suffix + "'\n");
+                var image = ImageDef.parseFile(template);
+                var repo = image.getRepos().getFirst();
+                assertEquals("~/repo", repo.getPath());
+                assertTrue(HostRepoSource.isHostOnly(repo.getUrl()));
+                var snapshot = HostRepoSource.capture(repo.getUrl(), repo.getTemplateDirectory());
+                assertEquals(source.resolve(".git"), snapshot.gitDirectory());
+                var destination = tempDir.resolve("copy-" + (suffix.isEmpty() ? "worktree" : "gitdir"));
+                Files.writeString(source.resolve("tracked"), "dirty\n");
+                Files.writeString(source.resolve("untracked"), "private\n");
+                shell(snapshot.cloneScript(snapshot.gitDirectory().toString(), destination.toString()));
+                assertEquals("committed\n", Files.readString(destination.resolve("tracked")));
+                assertFalse(Files.exists(destination.resolve("untracked")));
+                assertEquals(runGit(source, "rev-parse", "HEAD"), runGit(destination, "rev-parse", "HEAD"));
+                assertEquals("true", runGit(destination, "config", HostRepoSource.CONFIG_KEY).strip());
+
+                var stored = new BuildSource(Map.of(image.getName(), image), Map.of(), Map.of(),
+                        Map.of(image.getName(), image.getSource()));
+                var restored = BuildSource.fromJson(stored.toJson()).getDefinitions().get(image.getName());
+                var restoredRepo = restored.getRepos().getFirst();
+                assertEquals(snapshot, HostRepoSource.capture(restoredRepo.getUrl(), restoredRepo.getTemplateDirectory()));
+                var before = restored.contentFingerprint(Map.of());
+                runGit(source, "commit", "--allow-empty", "-m", "Another local commit");
+                assertNotEquals(before, restored.contentFingerprint(Map.of()));
+            }
+        } finally {
+            System.setProperty("user.home", originalHome);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"file://files.com/path/to/repo", "file://localhost/repo", "file://host:22/repo",
+            "file://user@host/repo", "file:////host/repo", "//host/repo",
+            "file:repo?query", "file:repo#fragment",
+            "file:repo%00", "file:", "file://", "file:~someone/repo",
+            "file:%2Frepo", "file://%2Frepo", "file://host%2Frepo", "file://host%3A22"})
+    void rejectsUnsafeOrAmbiguousLocalForms(String url) {
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.path(url));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"file://../dir/repo", "file:../dir/repo", "../dir/repo", "./dir/../repo",
+            "file:./%2e%2e/repo", "file://./%2e%2e/repo"})
+    void rejectsParentTraversalInTemplateSources(String url) {
+        var error = assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture(url, tempDir));
+        assertTrue(error.getMessage().contains("must not contain '..'"));
+    }
+
+    @Test
+    void relativeSourcesNeedATemplateAndCannotEscapeThroughSymlinks() throws Exception {
+        var outside = repository("outside");
+        var templates = Files.createDirectory(tempDir.resolve("templates"));
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture("repo"));
+        Files.createSymbolicLink(templates.resolve("repo"), outside);
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture("repo", templates));
+        var inside = Files.createDirectory(templates.resolve("inside"));
+        Files.createSymbolicLink(inside.resolve(".git"), outside.resolve(".git"));
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture("inside", templates));
+        assertEquals(outside.resolve(".git"), HostRepoSource.capture(outside.toString()).gitDirectory());
+    }
+
+    @Test
+    void supportsBareRepositoriesWithoutSearchingAncestorDirectories() throws Exception {
+        var source = repository("repo");
+        var bare = tempDir.resolve("bare.git");
+        runGit(tempDir, "clone", "--bare", source.toString(), bare.toString());
+        assertEquals(HostRepoSource.capture(source.toString()).head(), HostRepoSource.capture(bare.toString()).head());
+        var subdir = Files.createDirectory(source.resolve("subdir"));
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture(subdir.toString()));
+    }
+
+    @Test
+    void inheritedRepositoriesKeepTheirOwnTemplateDirectory() throws Exception {
+        var parentRepo = repository("parent/repo");
+        var childRepo = repository("child/repo");
+        runGit(childRepo, "commit", "--allow-empty", "-m", "Different child HEAD");
+        var parentFile = tempDir.resolve("parent/image.yaml");
+        var childFile = tempDir.resolve("child/image.yaml");
+        Files.writeString(parentFile, "name: tpl-parent\nrepos:\n  - url: repo\n");
+        Files.writeString(childFile, "name: tpl-child\nparent: tpl-parent\nrepos:\n  - url: repo\n");
+        var parent = ImageDef.parseFile(parentFile);
+        var child = ImageDef.parseFile(childFile);
+        var definitions = Map.of(parent.getName(), parent, child.getName(), child);
+        var stored = new BuildSource(definitions, Map.of(), Map.of(),
+                Map.of(parent.getName(), parent.getSource(), child.getName(), child.getSource()));
+        var restored = BuildSource.fromJson(stored.toJson()).getDefinitions();
+        var repos = HostRepoRefresh.collectAllRepos(restored.get(child.getName()), restored);
+        assertEquals(List.of(childRepo.resolve(".git"), parentRepo.resolve(".git")), repos.stream()
+                .map(repo -> HostRepoSource.gitDirectory(repo.getUrl(), repo.getTemplateDirectory())).toList());
+    }
+
+    @Test
+    void plainPathsKeepLiteralReservedCharactersAndRemoteProtocolsStayRemote() throws Exception {
+        var source = repository("Some Project #1%+?");
+        assertEquals(HostRepoSource.capture(source.toUri().toString()), HostRepoSource.capture(source.toString()));
+        for (var remote : List.of("https://github.com/org/repo.git", "ssh://git@example.com/repo",
+                "git@example.com:org/repo", "example.com:org/repo", "git://example.com/repo", "isx://branch/~/repo")) {
+            assertFalse(HostRepoSource.isHostOnly(remote), remote);
         }
     }
 
@@ -138,6 +259,7 @@ class HostRepoSourceTest {
         runGit(source, "config", "--unset", "remote.origin.promisor");
         runGit(source, "worktree", "add", tempDir.resolve("worktree").toString());
         assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture(url(tempDir.resolve("worktree"))));
+        assertThrows(IllegalArgumentException.class, () -> HostRepoSource.capture(tempDir.resolve("worktree").toString()));
     }
 
     @Test
