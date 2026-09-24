@@ -101,7 +101,10 @@ public final class GitRemoteUtils {
 
     public static String normalizeGitUrl(String url) {
         if (url == null || url.isEmpty()) return "";
-        if (HostRepoSource.isHostOnly(url)) return HostRepoSource.path(url).toUri().toString();
+        if (HostRepoSource.isHostOnly(url)) {
+            var path = HostRepoSource.path(url);
+            return path.isAbsolute() ? path.toUri().toString() : "file:" + path;
+        }
         var s = url.strip();
         // SSH format: git@github.com:org/repo.git -> github.com/org/repo
         var atIdx = s.indexOf('@');

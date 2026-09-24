@@ -27,7 +27,7 @@ public final class AutoRemoteService {
         for (var repo : repos) {
             try {
                 if (HostRepoSource.isHostOnly(repo.getUrl())) {
-                    addRemoteInHostRepo(HostRepoSource.gitDirectory(repo.getUrl()), instanceName, repo.getPath(), output, cache);
+                    addRemoteInHostRepo(HostRepoSource.gitDirectory(repo.getUrl(), repo.getTemplateDirectory()), instanceName, repo.getPath(), output, cache);
                     continue;
                 }
                 var normalizedUrl = GitRemoteUtils.normalizeGitUrl(repo.getUrl());
@@ -74,7 +74,7 @@ public final class AutoRemoteService {
             for (var repo : image.getRepos()) {
                 if (HostRepoSource.isHostOnly(repo.getUrl())) {
                     try {
-                        candidates.add(HostRepoSource.gitDirectory(repo.getUrl()));
+                        candidates.add(HostRepoSource.gitDirectory(repo.getUrl(), repo.getTemplateDirectory()));
                     } catch (IllegalArgumentException ignored) {
                         // A removed or unavailable source cannot have a remote removed.
                     }

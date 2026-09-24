@@ -6,6 +6,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -41,17 +43,18 @@ class AutoRemoteServiceTest {
         }
     }
 
-    @Test
-    void explicitHostSourceAddsAndRemovesRemoteWithoutSearchPaths() throws Exception {
-        var repoDir = Files.createDirectories(tempDir.resolve("direct-source"));
-        runGit(repoDir, "init", "-b", "main");
+    @ParameterizedTest
+    @ValueSource(strings = {"file://{absolute}/.git", "{absolute}", "file:direct-source", "./direct-source"})
+    void explicitHostSourceAddsAndRemovesRemoteWithoutSearchPaths(String form) throws Exception {
         var images = Files.createDirectories(tempDir.resolve(".config/incus-spawn/images"));
+        var repoDir = Files.createDirectories(images.resolve("direct-source"));
+        runGit(repoDir, "init", "-b", "main");
         Files.writeString(images.resolve("direct.yaml"), """
                 name: tpl-direct
                 repos:
                   - url: %s
                     path: /home/agentuser/direct
-                """.formatted(repoDir.resolve(".git").toUri()));
+                """.formatted(form.replace("{absolute}", repoDir.toString())));
         var incus = mock(IncusClient.class);
         when(incus.configGet("work", Metadata.PARENT)).thenReturn("tpl-direct");
 

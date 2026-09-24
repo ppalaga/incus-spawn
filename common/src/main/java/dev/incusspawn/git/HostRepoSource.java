@@ -13,27 +13,64 @@ import java.util.List;
 
 import static dev.incusspawn.incus.Container.shellQuote;
 
-/** A file URL names a required host repository, never a remote to fetch. */
+/** A local path or file URL names a required host repository, never a remote to fetch. */
 public final class HostRepoSource {
     public static final String CONFIG_KEY = "isx.hostOnly";
 
     private HostRepoSource() {}
 
     public static boolean isHostOnly(String url) {
-        return url != null && url.regionMatches(true, 0, "file:", 0, 5);
+        if (url == null || url.isBlank()) return false;
+        if (url.regionMatches(true, 0, "file:", 0, 5)) return true;
+        // Preserve URL schemes and scp-style Git remotes (user@host:path).
+        // A colon after a slash is part of a local pathname.
+        int colon = url.indexOf(':');
+        int slash = url.indexOf('/');
+        return colon < 0 || (slash >= 0 && slash < colon);
     }
 
     public static Path path(String url) {
+        return parsePath(url).normalize();
+    }
+
+    private static Path parsePath(String url) {
         try {
-            var uri = URI.create(url);
-            if (!"file".equalsIgnoreCase(uri.getScheme()) || uri.isOpaque()
-                    || uri.getRawAuthority() != null || uri.getQuery() != null || uri.getFragment() != null
-                    || uri.getPath() == null || !uri.getPath().startsWith("/")) {
-                throw new IllegalArgumentException();
+            if (!isHostOnly(url)) throw new IllegalArgumentException("Not a host repository path");
+            var value = url;
+            if (url.regionMatches(true, 0, "file:", 0, 5)) {
+                value = url.substring(5);
+                boolean singleName = false;
+                if (value.startsWith("//")) {
+                    value = value.substring(2);
+                    // file://repo is a shorthand; file://host/path is an authority.
+                    singleName = !value.startsWith("/") && !value.startsWith("~/")
+                            && !value.startsWith("./") && !value.startsWith("../");
+                    if (singleName && (value.contains("/") || value.contains(":") || value.contains("@"))) {
+                        throw new IllegalArgumentException("File URL hosts are not supported; use file:dir/repo for a relative path");
+                    }
+                }
+                boolean absolute = value.startsWith("/");
+                var uri = URI.create("file:" + (absolute ? "" : "/") + value);
+                if (uri.getRawAuthority() != null || uri.getRawQuery() != null || uri.getRawFragment() != null) {
+                    throw new IllegalArgumentException("File URLs must not have a host, query or fragment");
+                }
+                value = absolute ? uri.getPath() : uri.getPath().substring(1);
+                if ((!absolute && value.startsWith("/"))
+                        || (singleName && (value.contains("/") || value.contains(":") || value.contains("@")))) {
+                    throw new IllegalArgumentException("Encoded separators must not change the file URL's path form");
+                }
             }
-            return Path.of(uri.getPath()).normalize();
+            if (value.isBlank() || value.startsWith("//")) throw new IllegalArgumentException("Expected a local path");
+            if (value.startsWith("~") && !value.equals("~") && !value.startsWith("~/")) {
+                throw new IllegalArgumentException("Only the current host user's ~/ is supported");
+            }
+            var path = Path.of(value);
+            if (value.equals("~") || value.startsWith("~/")) {
+                path = Path.of(System.getProperty("user.home")).resolve(value.equals("~") ? "" : value.substring(2));
+            }
+            return path;
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Expected an absolute host file URL without an authority, query or fragment: " + url, e);
+            throw new IllegalArgumentException("Invalid host repository '" + url + "': " + e.getMessage(), e);
         }
     }
 
@@ -41,16 +78,44 @@ public final class HostRepoSource {
         var source = path(url);
         if (source.getFileName() == null) return "";
         if (source.getFileName().toString().equals(".git")) source = source.getParent();
+        if (source == null) return "";
         var name = source.getFileName() == null ? "" : source.getFileName().toString();
         return name.endsWith(".git") ? name.substring(0, name.length() - 4) : name;
     }
 
-    /** Initial support is deliberately limited to self-contained Git directories. */
     public static Path gitDirectory(String url) {
-        var source = path(url);
+        return gitDirectory(url, null);
+    }
+
+    /** Resolve only self-contained Git directories; never discover repos in ancestor directories. */
+    public static Path gitDirectory(String url, Path templateDirectory) {
+        var source = parsePath(url);
+        boolean relative = !source.isAbsolute();
+        if (relative) {
+            for (var component : source) {
+                if (component.toString().equals("..")) {
+                    throw new IllegalArgumentException("Relative host repository paths must not contain '..'; use an explicit absolute path: " + url);
+                }
+            }
+            if (templateDirectory == null) {
+                throw new IllegalArgumentException("Relative host repository requires a template file location: " + url);
+            }
+            source = templateDirectory.resolve(source).toAbsolutePath().normalize();
+        }
+        source = source.normalize();
+        if (Files.isDirectory(source.resolve(".git"))) source = source.resolve(".git");
+        if (relative) {
+            try {
+                if (!source.toRealPath().startsWith(templateDirectory.toRealPath())) {
+                    throw new IllegalArgumentException("Relative host repository escapes the template directory: " + url);
+                }
+            } catch (IOException e) {
+                throw new IllegalArgumentException("Cannot resolve host repository: " + source, e);
+            }
+        }
         if (!Files.isDirectory(source) || !Files.isRegularFile(source.resolve("HEAD"))
                 || !Files.isDirectory(source.resolve("objects")) || Files.exists(source.resolve("commondir"))) {
-            throw new IllegalArgumentException("Host repository must be a standalone .git directory (or bare repository): " + source);
+            throw new IllegalArgumentException("Host repository must be a working copy with a standalone .git directory, a .git directory or a bare repository: " + source);
         }
         if (Files.exists(source.resolve("objects/info/alternates"))
                 || Files.exists(source.resolve("objects/info/http-alternates"))
@@ -137,7 +202,11 @@ public final class HostRepoSource {
     }
 
     public static Snapshot capture(String url) {
-        var source = gitDirectory(url);
+        return capture(url, null);
+    }
+
+    public static Snapshot capture(String url, Path templateDirectory) {
+        var source = gitDirectory(url, templateDirectory);
         var config = new ArrayList<ConfigEntry>();
         var rawConfig = git(source, true, "config", "--includes", "--null", "--get-regexp", "^(remote\\.|branch\\.)");
         for (var item : rawConfig.split("\u0000")) {
@@ -163,8 +232,12 @@ public final class HostRepoSource {
     }
 
     public static String fingerprint(String url) {
+        return fingerprint(url, null);
+    }
+
+    public static String fingerprint(String url, Path templateDirectory) {
         try {
-            return capture(url).fingerprint();
+            return capture(url, templateDirectory).fingerprint();
         } catch (IllegalArgumentException | IllegalStateException e) {
             // An unavailable source makes a previously built template outdated, but
             // must not prevent the TUI from displaying it. Building reports the error.
