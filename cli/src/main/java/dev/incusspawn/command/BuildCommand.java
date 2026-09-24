@@ -2678,7 +2678,7 @@ public class BuildCommand extends BaseCommand {
                 if (HostRepoSource.isHostOnly(repo.getUrl()) && repo.getBranch() != null) {
                     throw new IllegalArgumentException("Host-only repositories use the host HEAD; remove 'branch' from " + repo.getUrl());
                 }
-                refs[i] = tryMountReference(container, repo.getUrl(), config, isVm);
+                refs[i] = tryMountReference(container, repo, config, isVm);
             }
             TerminalProgress.run(repos.size(), concurrency,
                     idx -> prepareOne(container, repos.get(idx), refs[idx], states, idx, failureSeen),
@@ -2762,7 +2762,7 @@ public class BuildCommand extends BaseCommand {
                     states.set(idx, StepProgress.failed(gitError(clone), combinedOutput(clone)));
                     return CloneResult.FAILED;
                 }
-                if (!snapshot.fingerprint().equals(HostRepoSource.capture(repo.getUrl()).fingerprint())) {
+                if (!snapshot.fingerprint().equals(HostRepoSource.capture(repo.getUrl(), repo.getTemplateDirectory()).fingerprint())) {
                     throw new IllegalStateException("Host repository changed while cloning; retry the build: " + repo.getUrl());
                 }
                 builtHostRepoFingerprints.put(repo.getUrl(), snapshot.fingerprint());
@@ -2986,13 +2986,14 @@ public class BuildCommand extends BaseCommand {
         return cmd.toString();
     }
 
-    RepoReference tryMountReference(Container container, String cloneUrl, SpawnConfig config, boolean isVm) {
+    RepoReference tryMountReference(Container container, ImageDef.RepoEntry repo, SpawnConfig config, boolean isVm) {
+        var cloneUrl = repo.getUrl();
         boolean hostOnly = HostRepoSource.isHostOnly(cloneUrl);
         try {
             var repoName = GitRemoteUtils.repoNameFromUrl(cloneUrl);
             if (repoName.isEmpty()) return null;
 
-            var snapshot = hostOnly ? HostRepoSource.capture(cloneUrl) : null;
+            var snapshot = hostOnly ? HostRepoSource.capture(cloneUrl, repo.getTemplateDirectory()) : null;
             var hostPath = hostOnly ? snapshot.gitDirectory() : GitRemoteUtils.resolveHostRepoPath(repoName, config);
             if (hostPath == null) return null;
             if (!hostOnly && (!Files.isDirectory(hostPath) || !GitRemoteUtils.isGitRepo(hostPath)

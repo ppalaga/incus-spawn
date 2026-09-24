@@ -1282,7 +1282,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         doReturn(new BuildCommand.RepoReference("host-ref", "/mnt/host", null, snapshot))
-                .when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+                .when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
         when(incus.execInContainer(eq("test"), eq("agentuser"), anyString())).thenReturn(OK);
 
         cmd.cloneRepos(container, imageDef, false);
@@ -1310,7 +1310,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         doReturn(new BuildCommand.RepoReference("first-ref", "/mnt/first", null))
-                .when(cmd).tryMountReference(eq(container), eq(first.getUrl()), any(), eq(false));
+                .when(cmd).tryMountReference(eq(container), eq(first), any(), eq(false));
 
         var failure = assertThrows(IllegalStateException.class, () -> cmd.cloneRepos(container, imageDef, false));
         assertTrue(failure.getMessage().contains("required host repository"));
@@ -1322,13 +1322,14 @@ class BuildCommandTest {
     void hostOnlyMountIsRequiredAndVmTimeoutRemovesDevice(@TempDir Path tmp) throws Exception {
         var init = new ProcessBuilder("git", "init", "-b", "host-branch", tmp.toString()).start();
         assertEquals(0, init.waitFor());
-        var url = tmp.resolve(".git").toUri().toString();
+        var repo = new ImageDef.RepoEntry();
+        repo.setUrl(tmp.resolve(".git").toUri().toString());
         var incus = mock(IncusClient.class);
         var container = new Container(incus, "test");
         var cmd = new BuildCommand();
         cmd.incus = incus;
         when(incus.shellExec(eq("test"), any(String[].class))).thenReturn(OK);
-        var ref = cmd.tryMountReference(container, url, new dev.incusspawn.config.SpawnConfig(), false);
+        var ref = cmd.tryMountReference(container, repo, new dev.incusspawn.config.SpawnConfig(), false);
         assertNotNull(ref.hostSource());
         var arguments = ArgumentCaptor.forClass(String[].class);
         verify(incus).deviceAdd(eq("test"), eq(ref.deviceName()), eq("disk"), arguments.capture());
@@ -1338,7 +1339,7 @@ class BuildCommandTest {
         clearInvocations(incus);
         when(incus.shellExec(eq("test"), eq("sh"), eq("-c"), anyString())).thenReturn(FAIL);
         assertThrows(IllegalStateException.class,
-                () -> cmd.tryMountReference(container, url, new dev.incusspawn.config.SpawnConfig(), true));
+                () -> cmd.tryMountReference(container, repo, new dev.incusspawn.config.SpawnConfig(), true));
         verify(incus).deviceRemove("test", ref.deviceName());
     }
 
@@ -1357,7 +1358,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         doReturn(new BuildCommand.RepoReference("host-ref", "/mnt/host", null, snapshot))
-                .when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+                .when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
         when(incus.execInContainer(eq("test"), eq("agentuser"), anyString())).thenAnswer(invocation -> {
             Files.writeString(tmp.resolve(".git/HEAD"), "ref: refs/heads/after\n");
             return OK;
@@ -1398,7 +1399,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         var ref = new BuildCommand.RepoReference("ref-repo", "/mnt/ref/repo", null);
-        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
 
         cmd.cloneRepos(container, imageDef, false);
 
@@ -1440,7 +1441,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         var ref = new BuildCommand.RepoReference("ref-repo", "/mnt/ref/repo", null);
-        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
 
         cmd.cloneRepos(container, imageDef, false);
 
@@ -1469,7 +1470,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         var ref = new BuildCommand.RepoReference("ref-repo", "/mnt/ref/repo", null);
-        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
 
         cmd.cloneRepos(container, imageDef, false);
 
@@ -1510,7 +1511,7 @@ class BuildCommandTest {
         var cmd = spy(new BuildCommand());
         cmd.incus = incus;
         var ref = new BuildCommand.RepoReference("ref-repo", "/mnt/ref/repo", null);
-        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo.getUrl()), any(), eq(false));
+        doReturn(ref).when(cmd).tryMountReference(eq(container), eq(repo), any(), eq(false));
 
         cmd.cloneRepos(container, imageDef, false);
 

@@ -4042,7 +4042,7 @@ public class ListCommand extends BaseCommand {
                             Span.styled("    prime: ", labelStyle),
                             Span.styled(repo.getPrime(), lineStyle))));
                 }
-                var hostMatch = resolveHostRepoMatch(repo.getUrl(), spawnConfig);
+                var hostMatch = resolveHostRepoMatch(repo, spawnConfig);
                 lines.add(Line.styled(hostMatch != null
                         ? "    Linked to host repository at " + hostMatch
                         : "    No matching host checkout found", dimStyle));
@@ -4099,10 +4099,11 @@ public class ListCommand extends BaseCommand {
         return toolRef.getName() + " (" + paramStr + ")";
     }
 
-    private static java.nio.file.Path resolveHostRepoMatch(String cloneUrl, SpawnConfig config) {
+    private static java.nio.file.Path resolveHostRepoMatch(dev.incusspawn.config.ImageDef.RepoEntry repo, SpawnConfig config) {
+        var cloneUrl = repo.getUrl();
         try {
             if (dev.incusspawn.git.HostRepoSource.isHostOnly(cloneUrl)) {
-                return dev.incusspawn.git.HostRepoSource.gitDirectory(cloneUrl);
+                return dev.incusspawn.git.HostRepoSource.gitDirectory(cloneUrl, repo.getTemplateDirectory());
             }
             var repoName = GitRemoteUtils.repoNameFromUrl(cloneUrl);
             if (repoName.isEmpty()) return null;
@@ -4554,7 +4555,7 @@ public class ListCommand extends BaseCommand {
                                 Span.styled(contentIndent + "  prime: ", labelStyle),
                                 Span.styled(repo.getPrime(), lineStyle))));
                     }
-                    var hostMatch = resolveHostRepoMatch(repo.getUrl(), spawnConfig);
+                    var hostMatch = resolveHostRepoMatch(repo, spawnConfig);
                     lines.add(Line.styled(contentIndent + (hostMatch != null
                             ? "  Linked to host repository at " + hostMatch
                             : "  No matching host checkout found"), dimStyle));
