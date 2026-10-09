@@ -75,7 +75,9 @@ public class ImageDef {
      * Parse an image definition from a YAML file on disk.
      */
     public static ImageDef parseFile(Path file) throws IOException {
-        return YAML.readValue(file.toFile(), ImageDef.class);
+        var def = YAML.readValue(file.toFile(), ImageDef.class);
+        def.setSource(file.toAbsolutePath().toString());
+        return def;
     }
 
     public static ImageDef parseYaml(String yaml) throws IOException {
@@ -150,6 +152,17 @@ public class ImageDef {
     @JsonIgnore
     private Path projectRoot;
 
+    /** Allowed host Git source root, supplied by the loader, never by template YAML. */
+    @JsonIgnore
+    private Path hostRepoRoot;
+
+    public Path getHostRepoRoot() { return hostRepoRoot; }
+    public void setHostRepoRoot(Path root) {
+        // Keep symlink/.. components until the access check can resolve real paths.
+        hostRepoRoot = root == null ? null : root.toAbsolutePath();
+        for (var repo : repos) repo.hostRepoRoot = hostRepoRoot;
+    }
+
     public Path getProjectRoot() { return projectRoot; }
     public void setProjectRoot(Path projectRoot) { this.projectRoot = projectRoot; }
     public String getName() { return name; }
@@ -177,7 +190,11 @@ public class ImageDef {
     public List<ToolDef.ToolRef> getTools() { return tools; }
     public void setTools(List<ToolDef.ToolRef> tools) { this.tools = tools; }
     public List<RepoEntry> getRepos() { return repos; }
-    public void setRepos(List<RepoEntry> repos) { this.repos = repos; }
+    public void setRepos(List<RepoEntry> repos) {
+        this.repos = repos;
+        setSource(source);
+        setHostRepoRoot(hostRepoRoot);
+    }
     public SkillsDef getSkills() { return skills; }
     public void setSkills(SkillsDef skills) { this.skills = skills; }
     public List<PackageRepo> getPackageRepos() { return packageRepos; }
@@ -212,7 +229,11 @@ public class ImageDef {
         this.accounts = accounts == null ? Map.of() : Map.copyOf(accounts);
     }
     public String getSource() { return source; }
-    public void setSource(String source) { this.source = source; }
+    public void setSource(String source) {
+        this.source = source;
+        var directory = source != null && Path.of(source).isAbsolute() ? Path.of(source).getParent() : null;
+        for (var repo : repos) repo.templateDirectory = directory;
+    }
     /** Whether this definition ships with isx itself, as opposed to one the user wrote. */
     public boolean isBuiltIn() { return "built-in".equals(source); }
 
@@ -300,13 +321,24 @@ public class ImageDef {
         private String path;
         private String branch;
         private String prime;
+        @JsonIgnore
+        private Path templateDirectory;
+        @JsonIgnore
+        private Path hostRepoRoot;
+
+        @JsonIgnore
+        public Path getTemplateDirectory() { return templateDirectory; }
+        @JsonIgnore
+        public Path getHostRepoRoot() { return hostRepoRoot; }
 
         public String getUrl() { return url; }
         public void setUrl(String url) { this.url = url; }
         public String getPath() {
             if (path != null) return path;
             if (url == null) return null;
-            var name = dev.incusspawn.git.GitRemoteUtils.repoNameFromUrl(url);
+            var name = dev.incusspawn.git.HostRepoSource.isHostOnly(url)
+                    ? dev.incusspawn.git.HostRepoSource.repoName(url, templateDirectory)
+                    : dev.incusspawn.git.GitRemoteUtils.repoNameFromUrl(url);
             return name.isEmpty() ? null : "~/" + name;
         }
         public void setPath(String path) { this.path = path; }
@@ -385,6 +417,11 @@ public class ImageDef {
     }
 
     public String contentFingerprint(Map<String, String> toolFingerprints) {
+        return contentFingerprint(toolFingerprints, Map.of());
+    }
+
+    /** Build stamps use the host state actually copied, even if the host advances later. */
+    public String contentFingerprint(Map<String, String> toolFingerprints, Map<String, String> hostRepoFingerprints) {
         var sb = new StringBuilder();
         sb.append("image=").append(image).append('\n');
         if (imageUrl != null) sb.append("image_url=").append(imageUrl).append('\n');
@@ -427,8 +464,15 @@ public class ImageDef {
         repos.stream()
                 .sorted(java.util.Comparator.<RepoEntry, String>comparing(r -> String.valueOf(r.getUrl()))
                         .thenComparing(r -> String.valueOf(r.getPath())))
-                .forEach(r -> sb.append("repo=").append(r.getUrl()).append(',').append(r.getPath())
-                        .append(',').append(r.getBranch()).append(',').append(r.getPrime()).append('\n'));
+                .forEach(r -> {
+                    sb.append("repo=").append(r.getUrl()).append(',').append(r.getPath())
+                            .append(',').append(r.getBranch()).append(',').append(r.getPrime()).append('\n');
+                    if (dev.incusspawn.git.HostRepoSource.isHostOnly(r.getUrl())) {
+                        sb.append("host-repo=").append(hostRepoFingerprints.containsKey(r.getUrl())
+                                ? hostRepoFingerprints.get(r.getUrl())
+                                : dev.incusspawn.git.HostRepoSource.fingerprint(r)).append('\n');
+                    }
+                });
         if (skills.getRepo() != null) sb.append("skills-repo=").append(skills.getRepo()).append('\n');
         skills.getList().stream().sorted().forEach(s -> sb.append("skill=").append(s).append('\n'));
         for (var hr : hostResources) {
@@ -622,12 +666,12 @@ public class ImageDef {
                                                                      boolean includeProject) {
         var defs = new LayeredDefinitions<ImageDef>("image");
         loadBuiltins(defs, warnings);
-        loadFromDirectory(userImagesDir(), defs, warnings, null);
+        loadFromDirectory(userImagesDir(), defs, warnings, null, SpawnConfig.configDir());
         for (var searchPath : searchPaths) {
             var expandedPath = HostResourceSetup.expandHostTilde(searchPath);
-            loadFromDirectory(Path.of(expandedPath).resolve("images"), defs, warnings, null);
+            loadFromDirectory(Path.of(expandedPath).resolve("images"), defs, warnings, null, Path.of(expandedPath));
         }
-        if (includeProject) loadFromDirectory(PROJECT_IMAGES_DIR, defs, warnings, projectRoot());
+        if (includeProject) loadFromDirectory(PROJECT_IMAGES_DIR, defs, warnings, projectRoot(), projectRoot());
         inheritTypes(defs.defs());
         return defs;
     }
@@ -680,7 +724,7 @@ public class ImageDef {
     }
 
     private static void loadFromDirectory(Path dir, LayeredDefinitions<ImageDef> defs, Consumer<String> warnings,
-                                          Path projectRoot) {
+                                          Path projectRoot, Path hostRepoRoot) {
         if (!Files.isDirectory(dir)) return;
         defs.beginDirectory();
         try (var stream = Files.list(dir)) {
@@ -692,9 +736,10 @@ public class ImageDef {
                 try (var is = Files.newInputStream(path)) {
                     var def = YAML.readValue(is, ImageDef.class);
                     if (def.getName() != null) {
-                        var source = path.toAbsolutePath().normalize();
+                        var source = path.toAbsolutePath();
                         def.setSource(source.toString());
                         def.setProjectRoot(projectRoot);
+                        def.setHostRepoRoot(hostRepoRoot);
                         validate(def, path.getFileName().toString(), warnings);
                         defs.put(def.getName(), def, source);
                     }

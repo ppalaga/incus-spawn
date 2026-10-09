@@ -51,7 +51,7 @@ final class TemplateDetailView {
         List<String> autoDeps(List<String> explicitTools);
 
         /** The host checkout a repo URL is linked to, or null. */
-        Path hostRepoMatch(String cloneUrl);
+        Path hostRepoMatch(ImageDef.RepoEntry repo);
 
         boolean definitionChanged(String template);
 
@@ -228,7 +228,7 @@ final class TemplateDetailView {
                             Span.styled("    prime: ", labelStyle),
                             Span.styled(repo.getPrime(), lineStyle))));
                 }
-                var hostMatch = source.hostRepoMatch(repo.getUrl());
+                var hostMatch = source.hostRepoMatch(repo);
                 lines.add(Line.styled(hostMatch != null
                         ? "    Linked to host repository at " + hostMatch
                         : "    No matching host checkout found", dimStyle));
@@ -475,7 +475,7 @@ final class TemplateDetailView {
                             Span.styled(contentIndent + "  prime: ", labelStyle),
                             Span.styled(repo.getPrime(), lineStyle))));
                 }
-                var hostMatch = source.hostRepoMatch(repo.getUrl());
+                var hostMatch = source.hostRepoMatch(repo);
                 lines.add(Line.styled(contentIndent + (hostMatch != null
                         ? "  Linked to host repository at " + hostMatch
                         : "  No matching host checkout found"), dimStyle));

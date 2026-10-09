@@ -147,8 +147,8 @@ public class ListCommand extends BaseCommand {
             new TemplateDetailView.Source() {
                 @Override public Map<String, dev.incusspawn.config.ImageDef> imageDefs() { return imageDefs; }
                 @Override public List<String> autoDeps(List<String> explicitTools) { return collectAutoDeps(explicitTools); }
-                @Override public java.nio.file.Path hostRepoMatch(String cloneUrl) {
-                    return resolveHostRepoMatch(cloneUrl, SpawnConfig.load());
+                @Override public java.nio.file.Path hostRepoMatch(dev.incusspawn.config.ImageDef.RepoEntry repo) {
+                    return resolveHostRepoMatch(repo, SpawnConfig.load());
                 }
                 @Override public boolean definitionChanged(String template) { return templatesDefChanged.contains(template); }
                 @Override public boolean parentRebuilt(String template) { return templatesParentRebuilt.contains(template); }
@@ -4305,15 +4305,19 @@ public class ListCommand extends BaseCommand {
         return new ArrayList<>(allDeps);
     }
 
-    private static java.nio.file.Path resolveHostRepoMatch(String cloneUrl, SpawnConfig config) {
+    private static java.nio.file.Path resolveHostRepoMatch(dev.incusspawn.config.ImageDef.RepoEntry repo, SpawnConfig config) {
+        var cloneUrl = repo.getUrl();
         try {
+            if (dev.incusspawn.git.HostRepoSource.isHostOnly(cloneUrl)) {
+                return dev.incusspawn.git.HostRepoSource.gitDirectory(repo);
+            }
             var repoName = GitRemoteUtils.repoNameFromUrl(cloneUrl);
             if (repoName.isEmpty()) return null;
             var hostPath = GitRemoteUtils.resolveHostRepoPath(repoName, config);
             if (hostPath == null || !java.nio.file.Files.isDirectory(hostPath) || !GitRemoteUtils.isGitRepo(hostPath))
                 return null;
             return GitRemoteUtils.anyRemoteMatches(hostPath, cloneUrl) ? hostPath : null;
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | IllegalArgumentException e) {
             return null;
         }
     }
